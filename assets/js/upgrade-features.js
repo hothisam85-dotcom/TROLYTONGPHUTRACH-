@@ -311,6 +311,22 @@
       }
     }
 
+    function studentClassRecord(student, classes) {
+      const studentClassId = String(student.class_id || "");
+      const studentClassCode = engine.codeText(student.class_code || "");
+      return (
+        classes.find((row) => String(row.id || "") === studentClassId) ||
+        classes.find((row) => engine.codeText(row.code || "") === studentClassCode) ||
+        classes.find((row) => engine.codeText(row.class_name || "") === studentClassCode) ||
+        null
+      );
+    }
+
+    function studentClassLabel(student, classes) {
+      const klass = studentClassRecord(student, classes);
+      return klass?.class_name || student.class_name || student.class_code || "—";
+    }
+
     async function studentsForView() {
       const [students, classes] = await Promise.all([
         db.all("students"),
@@ -349,7 +365,7 @@
         })
         .filter((row) => {
           if (!query) return true;
-          const klass = classById.get(row.class_id);
+          const klass = studentClassRecord(row, classes) || classById.get(row.class_id);
           return normalizeText(
             [
               row.student_code,
@@ -401,7 +417,7 @@
           <div class="table-wrap" style="max-height:520px"><table><thead><tr><th><input type="checkbox" id="studentSelectPage" aria-label="Chọn trang hiện tại"></th><th>STT</th><th>Mã học sinh</th><th>Họ và tên</th><th>Lớp</th><th>Tình trạng Đội</th><th>Chính sách/hỗ trợ</th><th>Trạng thái học</th><th>Thao tác</th></tr></thead><tbody>${model.rows
             .map(
               (row, index) =>
-                `<tr><td><input type="checkbox" data-student-select="${row.id}" ${selected.has(row.id) ? "checked" : ""} aria-label="Chọn ${esc(row.full_name)}"></td><td>${(model.page - 1) * state.studentPageSize + index + 1}</td><td><code>${esc(row.student_code)}</code></td><td class="wrap"><strong>${esc(row.full_name)}</strong><br><small>${fmtDate(row.birth_date)}</small></td><td>${esc(row.class_code || "—")}<br><small>${esc(campusName(row.campus_id))}</small></td><td><span class="badge blue">${esc(organizationLabel(row.organization_status))}</span></td><td class="wrap">${row.policy_groups ? `<span class="badge yellow">Chính sách</span> ${esc(row.policy_groups)}` : ""}${!["", "none"].includes(row.difficulty_status || "none") ? `<br><span class="badge red">${esc(difficultyLabel(row.difficulty_status))}</span>` : ""}${row.special_needs ? `<br><small>${esc(row.special_needs)}</small>` : ""}${!row.policy_groups && ["", "none"].includes(row.difficulty_status || "none") && !row.special_needs ? "—" : ""}</td><td>${row.status === "inactive" ? '<span class="badge">Ngừng học</span>' : row.status === "transferred" ? '<span class="badge yellow">Chuyển trường</span>' : row.status === "graduated" ? '<span class="badge blue">Hoàn thành</span>' : '<span class="badge green">Đang học</span>'}</td><td><button class="link-btn" data-student-view="${row.id}">Xem</button><button class="link-btn" data-student-edit="${row.id}">Sửa</button><button class="link-btn danger" data-student-delete="${row.id}">Xóa/Ngừng</button></td></tr>`,
+                `<tr><td><input type="checkbox" data-student-select="${row.id}" ${selected.has(row.id) ? "checked" : ""} aria-label="Chọn ${esc(row.full_name)}"></td><td>${(model.page - 1) * state.studentPageSize + index + 1}</td><td><code>${esc(row.student_code)}</code></td><td class="wrap"><strong>${esc(row.full_name)}</strong><br><small>${fmtDate(row.birth_date)}</small></td><td>${esc(studentClassLabel(row, classes))}<br><small>${esc(campusName(row.campus_id))}</small></td><td><span class="badge blue">${esc(organizationLabel(row.organization_status))}</span></td><td class="wrap">${row.policy_groups ? `<span class="badge yellow">Chính sách</span> ${esc(row.policy_groups)}` : ""}${!["", "none"].includes(row.difficulty_status || "none") ? `<br><span class="badge red">${esc(difficultyLabel(row.difficulty_status))}</span>` : ""}${row.special_needs ? `<br><small>${esc(row.special_needs)}</small>` : ""}${!row.policy_groups && ["", "none"].includes(row.difficulty_status || "none") && !row.special_needs ? "—" : ""}</td><td>${row.status === "inactive" ? '<span class="badge">Ngừng học</span>' : row.status === "transferred" ? '<span class="badge yellow">Chuyển trường</span>' : row.status === "graduated" ? '<span class="badge blue">Hoàn thành</span>' : '<span class="badge green">Đang học</span>'}</td><td><button class="link-btn" data-student-view="${row.id}">Xem</button><button class="link-btn" data-student-edit="${row.id}">Sửa</button><button class="link-btn danger" data-student-delete="${row.id}">Xóa/Ngừng</button></td></tr>`,
             )
             .join("") || '<tr><td colspan="9" class="empty">Chưa có học sinh theo bộ lọc.</td></tr>'}</tbody></table></div>${paginationHtml("student", model)}</div></div>`,
       );
@@ -672,12 +688,13 @@
     }
 
     async function viewStudent(id) {
-      const [student, incidents, commendations, programs, links] = await Promise.all([
+      const [student, incidents, commendations, programs, links, classes] = await Promise.all([
         db.get("students", id),
         db.all("student_incidents"),
         db.all("commendations"),
         db.all("program_results"),
         db.all("document_links"),
+        db.all("classes"),
       ]);
       if (!student) return;
       const relatedIncidents = incidents.filter(
@@ -699,7 +716,7 @@
       ).length;
       openModal(
         "Chi tiết học sinh",
-        `<div class="grid-2"><div class="card"><div class="card-body"><div class="split"><span>Mã học sinh</span><code>${esc(student.student_code)}</code></div><div class="split mt"><span>Họ và tên</span><strong>${esc(student.full_name)}</strong></div><div class="split mt"><span>Ngày sinh</span><span>${fmtDate(student.birth_date)}</span></div><div class="split mt"><span>Lớp</span><span>${esc(student.class_code || student.class_name || "—")}</span></div><div class="split mt"><span>Cơ sở</span><span>${esc(campusName(student.campus_id))}</span></div><div class="split mt"><span>Tình trạng Đội</span><strong>${esc(organizationLabel(student.organization_status))}</strong></div><div class="split mt"><span>Ngày kết nạp/công nhận</span><span>${fmtDate(student.organization_joined_date)}</span></div></div></div><div class="card"><div class="card-body"><div class="metric-row" style="grid-template-columns:1fr 1fr"><div class="metric"><strong>${relatedIncidents.length}</strong><span>Vi phạm/ghi nhận</span></div><div class="metric"><strong>${relatedAwards.length}</strong><span>Khen thưởng</span></div></div><div class="split mt"><span>Diện chính sách</span><strong>${esc(student.policy_groups || "Không ghi nhận")}</strong></div><div class="split mt"><span>Khó khăn</span><strong>${esc(difficultyLabel(student.difficulty_status))}</strong></div><div class="split mt"><span>Người liên hệ</span><span>${esc([student.guardian_name, student.guardian_phone].filter(Boolean).join(" • ") || "—")}</span></div></div></div></div><div class="card mt"><div class="card-head"><h2>Hỗ trợ và lưu ý</h2></div><div class="card-body"><p><strong>Đặc điểm cần lưu ý:</strong> ${esc(student.special_needs || "Chưa ghi nhận")}</p><p><strong>Nội dung hỗ trợ:</strong> ${esc(student.support_notes || "Chưa ghi nhận")}</p><p><strong>Ghi chú:</strong> ${esc(student.notes || "—")}</p></div></div><div class="card mt"><div class="card-head"><h2>Lịch sử vi phạm gần nhất</h2></div><div class="card-body">${relatedIncidents.length ? relatedIncidents.slice(-10).reverse().map((row) => `<div class="split"><span>${fmtDate(row.date)} • ${esc(row.incident_type)}</span><span>${esc(row.status || "draft")}</span></div>`).join("") : '<div class="empty">Chưa có vi phạm.</div>'}</div></div>`,
+        `<div class="grid-2"><div class="card"><div class="card-body"><div class="split"><span>Mã học sinh</span><code>${esc(student.student_code)}</code></div><div class="split mt"><span>Họ và tên</span><strong>${esc(student.full_name)}</strong></div><div class="split mt"><span>Ngày sinh</span><span>${fmtDate(student.birth_date)}</span></div><div class="split mt"><span>Lớp</span><span>${esc(studentClassLabel(student, classes))}</span></div><div class="split mt"><span>Cơ sở</span><span>${esc(campusName(student.campus_id))}</span></div><div class="split mt"><span>Tình trạng Đội</span><strong>${esc(organizationLabel(student.organization_status))}</strong></div><div class="split mt"><span>Ngày kết nạp/công nhận</span><span>${fmtDate(student.organization_joined_date)}</span></div></div></div><div class="card"><div class="card-body"><div class="metric-row" style="grid-template-columns:1fr 1fr"><div class="metric"><strong>${relatedIncidents.length}</strong><span>Vi phạm/ghi nhận</span></div><div class="metric"><strong>${relatedAwards.length}</strong><span>Khen thưởng</span></div></div><div class="split mt"><span>Diện chính sách</span><strong>${esc(student.policy_groups || "Không ghi nhận")}</strong></div><div class="split mt"><span>Khó khăn</span><strong>${esc(difficultyLabel(student.difficulty_status))}</strong></div><div class="split mt"><span>Người liên hệ</span><span>${esc([student.guardian_name, student.guardian_phone].filter(Boolean).join(" • ") || "—")}</span></div></div></div></div><div class="card mt"><div class="card-head"><h2>Hỗ trợ và lưu ý</h2></div><div class="card-body"><p><strong>Đặc điểm cần lưu ý:</strong> ${esc(student.special_needs || "Chưa ghi nhận")}</p><p><strong>Nội dung hỗ trợ:</strong> ${esc(student.support_notes || "Chưa ghi nhận")}</p><p><strong>Ghi chú:</strong> ${esc(student.notes || "—")}</p></div></div><div class="card mt"><div class="card-head"><h2>Lịch sử vi phạm gần nhất</h2></div><div class="card-body">${relatedIncidents.length ? relatedIncidents.slice(-10).reverse().map((row) => `<div class="split"><span>${fmtDate(row.date)} • ${esc(row.incident_type)}</span><span>${esc(row.status || "draft")}</span></div>`).join("") : '<div class="empty">Chưa có vi phạm.</div>'}</div></div>`,
         `<button class="btn" id="studentViewClose">Đóng</button><button class="btn primary" id="studentViewIncident">＋ Ghi nhận vi phạm</button>`,
         true,
       );
@@ -1007,7 +1024,7 @@
             })),
           );
         closeModal();
-        toast("Đã lưu ghi nhận; bảng thi đua không bị thay đổi.");
+        toast("Đã lưu ghi nhận; vi phạm đã liên kết để tính và xuất thi đua.");
         if (state.page === "incidents") renderIncidents();
       };
     }

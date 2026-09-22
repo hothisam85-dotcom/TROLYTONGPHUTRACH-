@@ -7599,6 +7599,24 @@
             entries.map((e) => [e.class_id + "|" + e.criteria_id, e]),
           );
         }
+        function countedIncident(row) {
+          return ["confirmed", "resolved"].includes(row.status || "draft");
+        }
+        function incidentSummary(rows, classId, weekId) {
+          const related = rows.filter(
+            (row) =>
+              countedIncident(row) &&
+              row.class_id === classId &&
+              (!weekId || row.week_id === weekId),
+          );
+          return {
+            count: related.length,
+            deduction: related.reduce(
+              (sum, row) => sum + (Number(row.proposed_deduction) || 0),
+              0,
+            ),
+          };
+        }
         function renderScoreEntry(ctx) {
           const area = $("#scoreArea");
           if (!ctx.set || !ctx.criteria.length)
@@ -7609,7 +7627,7 @@
               '<div class="empty">Chưa khởi tạo bảng tuần. Chọn “Khởi tạo bảng tuần” để bắt đầu nhập.</div>');
           const map = entryMap(ctx.entries),
             locked = ctx.sheet.status === "locked";
-          area.innerHTML = `<div class="score-wrap"><table class="score-table"><thead><tr><th style="min-width:110px">Lớp</th>${ctx.criteria.map((c) => `<th title="${esc(c.name)}">${esc(c.code)}<br><small>${esc(c.group)}</small></th>`).join("")}<th>Tổng</th><th class="score-note-head">Ghi chú đối chiếu</th><th>Trạng thái</th></tr></thead><tbody>${ctx.classes
+          area.innerHTML = `<div class="score-wrap"><table class="score-table"><thead><tr><th style="min-width:145px">Lớp</th>${ctx.criteria.map((c) => `<th title="${esc(c.name)}">${esc(c.code)}<br><small>${esc(c.group)}</small></th>`).join("")}<th>Vi phạm</th><th>Trừ điểm</th><th>Tổng</th><th class="score-note-head">Ghi chú đối chiếu</th><th>Trạng thái</th></tr></thead><tbody>${ctx.classes
             .map((cl, ri) => {
               let total =
                   ctx.set.formula === "base"
@@ -7632,7 +7650,9 @@
                   return `<td><input class="score-input ${e ? "" : "missing"}" data-row="${ri}" data-col="${ci}" data-class="${cl.id}" data-criterion="${c.id}" data-entry="${e?.id || ""}" value="${esc(v)}" ${locked ? "disabled" : ""} aria-label="${esc(cl.class_name)} - ${esc(c.name)}"></td>`;
                 })
                 .join("");
-              return `<tr><td><strong>${esc(cl.class_name)}</strong><br><small>${esc(campusName(cl.campus_id))}</small></td>${cells}<td class="score-total" data-total="${cl.id}">${total.toFixed(1)}</td><td class="score-note-cell"><div class="score-note-editor"><textarea class="score-class-note" data-class-note="${cl.id}" rows="2" placeholder="Ghi lỗi, nội dung cần đối chiếu…" ${locked ? "disabled" : ""}>${esc(ctx.sheet.class_notes?.[cl.id] || "")}</textarea><button class="btn small" data-save-score-note="${cl.id}" ${locked ? "disabled" : ""}>Lưu</button></div></td><td>${filled === ctx.criteria.length ? '<span class="badge green">Đủ</span>' : `<span class="badge yellow">${filled}/${ctx.criteria.length}</span>`}</td></tr>`;
+              const incidents = incidentSummary(ctx.incidents, cl.id, state.weekId);
+              total -= incidents.deduction;
+              return `<tr><td><strong>${esc(cl.class_name)}</strong><br><small>${esc(campusName(cl.campus_id))}</small><br><button class="link-btn" data-score-incident-class="${cl.id}">＋ Ghi vi phạm</button></td>${cells}<td>${incidents.count ? `<span class="badge red">${incidents.count}</span>` : "0"}</td><td>${incidents.deduction ? `<strong class="danger">-${incidents.deduction.toFixed(1)}</strong>` : "0"}</td><td class="score-total" data-total="${cl.id}">${total.toFixed(1)}</td><td class="score-note-cell"><div class="score-note-editor"><textarea class="score-class-note" data-class-note="${cl.id}" rows="2" placeholder="Ghi chú đối chiếu…" ${locked ? "disabled" : ""}>${esc(ctx.sheet.class_notes?.[cl.id] || "")}</textarea><button class="btn small" data-save-score-note="${cl.id}" ${locked ? "disabled" : ""}>Lưu</button></div></td><td>${filled === ctx.criteria.length ? '<span class="badge green">Đủ</span>' : `<span class="badge yellow">${filled}/${ctx.criteria.length}</span>`}</td></tr>`;
             })
             .join(
               "",
@@ -7661,6 +7681,12 @@
               (button.onclick = () =>
                 saveScoreClassNote(ctx, button.dataset.saveScoreNote)),
           );
+          $$('[data-score-incident-class]').forEach((button) => {
+            button.onclick = () => {
+              const klass = ctx.classes.find((item) => item.id === button.dataset.scoreIncidentClass);
+              if (klass) openIncidentForm(null, { class_id: klass.id, class_code: klass.code, campus_id: klass.campus_id });
+            };
+          });
         }
         async function saveScoreClassNote(ctx, classId) {
           const input = document.querySelector(
@@ -7999,13 +8025,16 @@
                     total += criterionScore(e, c, ctx.set);
                 }
               });
+              const incidents = incidentSummary(ctx.incidents, cl.id, state.weekId);
               return {
                 id: cl.id,
                 class_name: cl.class_name,
                 campus_id: cl.campus_id,
-                total,
+                total: total - incidents.deduction,
                 filled,
                 complete: filled === ctx.criteria.length,
+                incident_count: incidents.count,
+                incident_deduction: incidents.deduction,
               };
             })
             .filter((x) => x.filled > 0)
@@ -8067,6 +8096,7 @@
             entries = (await scoped("score_entries")).filter((entry) =>
               sheetIds.has(entry.sheet_id),
             ),
+            incidents = await scoped("student_incidents"),
             criteria = await db.all("criteria"),
             sets = await db.all("criteria_sets"),
             classes = (await scoped("classes")).filter(
@@ -8110,7 +8140,21 @@
                 if (criterion && entry.entry_state === "value")
                   score += criterionScore(entry, criterion, set);
               }
+              const week = weeks.find((item) => item.id === sheet.week_id);
+              const incidentRows = incidents.filter(
+                (row) =>
+                  countedIncident(row) &&
+                  row.class_id === classId &&
+                  (!week || row.week_id === week.id),
+              );
+              const incidentDeduction = incidentRows.reduce(
+                (sum, row) => sum + (Number(row.proposed_deduction) || 0),
+                0,
+              );
               aggregate.raw_total += score;
+              aggregate.raw_total -= incidentDeduction;
+              aggregate.incident_count = (aggregate.incident_count || 0) + incidentRows.length;
+              aggregate.incident_deduction = (aggregate.incident_deduction || 0) + incidentDeduction;
               aggregate.period_count++;
             }
           }
@@ -8141,7 +8185,7 @@
           const area = $("#scoreArea"),
             official = ["approved", "locked"].includes(ctx.sheet?.status),
             rank = await calculateRanking(false);
-          area.innerHTML = `${!official ? '<div class="notice warn">Bảng chưa được duyệt. Xếp hạng dưới đây là tạm thời, không dùng cho báo cáo chính thức.</div>' : ""}<div class="table-wrap"><table><thead><tr><th>Hạng</th><th>Lớp</th><th>Cơ sở</th><th>Tổng điểm</th><th>Mức dữ liệu</th><th>Loại</th></tr></thead><tbody>${rank.map((r) => `<tr><td><strong>${r.rank}</strong></td><td>${esc(r.class_name)}</td><td>${esc(campusName(r.campus_id))}</td><td><strong>${r.total.toFixed(1)}</strong></td><td>${r.complete ? '<span class="badge green">Đủ</span>' : '<span class="badge yellow">Chưa đủ</span>'}</td><td>${official ? '<span class="badge green">Chính thức</span>' : '<span class="badge yellow">Tạm thời</span>'}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">Chưa có dữ liệu xếp hạng.</td></tr>'}</tbody></table></div>`;
+          area.innerHTML = `${!official ? '<div class="notice warn">Bảng chưa được duyệt. Xếp hạng dưới đây là tạm thời, không dùng cho báo cáo chính thức.</div>' : ""}<div class="table-wrap"><table><thead><tr><th>Hạng</th><th>Lớp</th><th>Cơ sở</th><th>Vi phạm</th><th>Trừ điểm</th><th>Tổng điểm</th><th>Mức dữ liệu</th><th>Loại</th></tr></thead><tbody>${rank.map((r) => `<tr><td><strong>${r.rank}</strong></td><td>${esc(r.class_name)}</td><td>${esc(campusName(r.campus_id))}</td><td>${r.incident_count || 0}</td><td>${r.incident_deduction ? `-${Number(r.incident_deduction).toFixed(1)}` : "0"}</td><td><strong>${r.total.toFixed(1)}</strong></td><td>${r.complete ? '<span class="badge green">Đủ</span>' : '<span class="badge yellow">Chưa đủ</span>'}</td><td>${official ? '<span class="badge green">Chính thức</span>' : '<span class="badge yellow">Tạm thời</span>'}</td></tr>`).join("") || '<tr><td colspan="8" class="empty">Chưa có dữ liệu xếp hạng.</td></tr>'}</tbody></table></div>`;
         }
         function renderScoreAnomalies(ctx) {
           const map = entryMap(ctx.entries),
@@ -8626,6 +8670,17 @@
             equipment: "BÁO CÁO THIẾT BỊ ĐỘI",
             summary: "BÁO CÁO TỔNG HỢP CÔNG TÁC ĐỘI",
           }[type];
+          const classById = new Map((d.classes || []).map((row) => [row.id, row]));
+          const incidentClassName = (row) =>
+            classById.get(row.class_id)?.class_name || row.class_name || row.class_code || "—";
+          const reportIncidents =
+            type === "week" && d.week
+              ? d.incidents.filter(
+                  (row) =>
+                    row.week_id === d.week.id ||
+                    Number(row.week) === Number(d.week.number),
+                )
+              : d.incidents;
           let body = "";
           if (type === "week")
             body = `<h3>I. Kết quả thực hiện</h3><p>Đã hoàn thành <strong>${d.completed.length}</strong>/${d.tasks.length} công việc; còn <strong>${d.overdue.length}</strong> việc quá hạn.</p>${simpleTable(
@@ -8642,7 +8697,10 @@
                 fmtDate(x.date),
                 x.location || "Chưa cập nhật",
               ]),
-            )}<h3>III. Kế hoạch tuần sau</h3><p class="muted">Phần nhận xét/kế hoạch có thể bổ sung khi in; hệ thống không tự tạo số liệu ngoài dữ liệu nguồn.</p>`;
+            )}<h3>III. Vi phạm học sinh và ảnh hưởng thi đua</h3>${simpleTable(
+              ["Ngày", "Mã HS", "Họ tên", "Lớp", "Loại", "Điểm trừ", "Trạng thái"],
+              reportIncidents.map((x) => [x.date, x.student_code, x.student_name, incidentClassName(x), x.incident_type, x.proposed_deduction ?? 0, statusLabel(x.status)]),
+            )}<h3>IV. Kế hoạch tuần sau</h3><p class="muted">Phần nhận xét/kế hoạch có thể bổ sung khi in; hệ thống không tự tạo số liệu ngoài dữ liệu nguồn.</p>`;
           if (["scores", "scores_month", "scores_semester", "scores_year", "ranking"].includes(type)) {
             const rankingScope =
                 {
@@ -8657,7 +8715,7 @@
               ? '<div class="notice warn">Bảng tuần chưa được duyệt nên chưa có xếp hạng chính thức.</div>'
               : simpleTable(
                   rankingScope === "week"
-                    ? ["Hạng", "Lớp", "Cơ sở", "Tổng điểm"]
+                    ? ["Hạng", "Lớp", "Cơ sở", "Vi phạm", "Trừ điểm", "Tổng điểm"]
                     : [
                         "Hạng",
                         "Lớp",
@@ -8671,7 +8729,7 @@
                     x.class_name,
                     campusName(x.campus_id),
                     ...(rankingScope === "week"
-                      ? [x.total.toFixed(1)]
+                      ? [x.incident_count || 0, x.incident_deduction || 0, x.total.toFixed(1)]
                       : [
                           x.period_count,
                           x.total.toFixed(2),
@@ -8755,7 +8813,7 @@
           if (type === "incidents")
             body = simpleTable(
               ["Ngày", "Mã HS", "Họ tên", "Lớp", "Loại", "Nội dung", "Đề xuất", "Trạng thái"],
-              d.incidents.map((x) => [x.date, x.student_code, x.student_name, x.class_code, x.incident_type, x.content, x.proposed_deduction ?? "", statusLabel(x.status)]),
+              d.incidents.map((x) => [x.date, x.student_code, x.student_name, incidentClassName(x), x.incident_type, x.content, x.proposed_deduction ?? "", statusLabel(x.status)]),
             );
           if (type === "plans")
             body = simpleTable(
@@ -8902,6 +8960,8 @@
               rank: row.rank,
               class_name: row.class_name,
               campus: campusName(row.campus_id),
+              incident_count: row.incident_count || 0,
+              incident_deduction: row.incident_deduction || 0,
               total: row.total,
               period_count: row.period_count || 1,
               raw_total: row.raw_total ?? row.total,
@@ -8910,6 +8970,8 @@
               ["rank", "Hạng"],
               ["class_name", "Lớp"],
               ["campus", "Cơ sở"],
+              ["incident_count", "Vi phạm"],
+              ["incident_deduction", "Trừ điểm"],
               ["period_count", "Số tuần đã duyệt"],
               ["total", "Điểm trung bình"],
               ["raw_total", "Tổng điểm"],
@@ -8930,13 +8992,17 @@
               ["status", "Trạng thái"],
             ];
           } else if (type === "incidents") {
-            rows = d.incidents;
+            rows = d.incidents.map((row) => ({
+              ...row,
+              class_name: incidentClassName(row),
+            }));
             columns = [
               ["incident_code", "Mã vi phạm"],
               ["date", "Ngày"],
               ["student_code", "Mã học sinh"],
               ["student_name", "Họ tên"],
               ["class_code", "Lớp"],
+              ["class_name", "Tên lớp"],
               ["incident_type", "Loại"],
               ["content", "Nội dung"],
               ["proposed_deduction", "Điểm trừ đề xuất"],
@@ -9256,9 +9322,10 @@
               (x) =>
                 x.week_id === state.weekId &&
                 (!sheet || x.sheet_id === sheet.id),
-            );
+            ),
+            incidents = await scoped("student_incidents");
           state.criteriaSetId = set?.id || "";
-          return { sets: allSets, set, criteria, classes, sheet, entries };
+          return { sets: allSets, set, criteria, classes, sheet, entries, incidents };
         }
         async function showCriteriaConfig(selectedId = "") {
           const sets = (await scoped("criteria_sets")).sort((a, b) =>

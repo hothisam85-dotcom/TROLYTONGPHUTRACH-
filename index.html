@@ -7633,7 +7633,8 @@
                   ctx.set.formula === "base"
                     ? Number(ctx.set.base_score || 0)
                     : 0,
-                filled = 0;
+                filled = 0,
+                scoreDeduction = 0;
               const cells = ctx.criteria
                 .map((c, ci) => {
                   const e = map.get(cl.id + "|" + c.id),
@@ -7644,15 +7645,21 @@
                           ? "MIỄN"
                           : (e?.value ?? "");
                   if (e && e.entry_state === "value") {
-                    total += criterionScore(e, c, ctx.set);
+                    const delta = criterionScore(e, c, ctx.set);
+                    total += delta;
+                    if (delta < 0) scoreDeduction += Math.abs(delta);
                     filled++;
                   } else if (e) filled++;
                   return `<td><input class="score-input ${e ? "" : "missing"}" data-row="${ri}" data-col="${ci}" data-class="${cl.id}" data-criterion="${c.id}" data-entry="${e?.id || ""}" value="${esc(v)}" ${locked ? "disabled" : ""} aria-label="${esc(cl.class_name)} - ${esc(c.name)}"></td>`;
                 })
                 .join("");
               const incidents = incidentSummary(ctx.incidents, cl.id, state.weekId);
-              total -= incidents.deduction;
-              return `<tr><td><strong>${esc(cl.class_name)}</strong><br><small>${esc(campusName(cl.campus_id))}</small><br><button class="link-btn" data-score-incident-class="${cl.id}">＋ Ghi vi phạm</button></td>${cells}<td>${incidents.count ? `<span class="badge red">${incidents.count}</span>` : "0"}</td><td>${incidents.deduction ? `<strong class="danger">-${incidents.deduction.toFixed(1)}</strong>` : "0"}</td><td class="score-total" data-total="${cl.id}">${total.toFixed(1)}</td><td class="score-note-cell"><div class="score-note-editor"><textarea class="score-class-note" data-class-note="${cl.id}" rows="2" placeholder="Ghi chú đối chiếu…" ${locked ? "disabled" : ""}>${esc(ctx.sheet.class_notes?.[cl.id] || "")}</textarea><button class="btn small" data-save-score-note="${cl.id}" ${locked ? "disabled" : ""}>Lưu</button></div></td><td>${filled === ctx.criteria.length ? '<span class="badge green">Đủ</span>' : `<span class="badge yellow">${filled}/${ctx.criteria.length}</span>`}</td></tr>`;
+              const classNote = String(ctx.sheet.class_notes?.[cl.id] || "").trim();
+              const visibleIncidentCount = Math.max(
+                incidents.count,
+                classNote ? classNote.split(/\n+/).filter(Boolean).length : 0,
+              );
+              return `<tr><td><strong>${esc(cl.class_name)}</strong><br><small>${esc(campusName(cl.campus_id))}</small><br><button class="link-btn" data-score-incident-class="${cl.id}">＋ Ghi vi phạm</button></td>${cells}<td>${visibleIncidentCount ? `<span class="badge red">${visibleIncidentCount}</span>` : "0"}</td><td>${scoreDeduction ? `<strong class="danger">-${scoreDeduction.toFixed(1)}</strong>` : "0"}</td><td class="score-total" data-total="${cl.id}">${total.toFixed(1)}</td><td class="score-note-cell"><div class="score-note-editor"><textarea class="score-class-note" data-class-note="${cl.id}" rows="2" placeholder="Ghi chú đối chiếu…" ${locked ? "disabled" : ""}>${esc(ctx.sheet.class_notes?.[cl.id] || "")}</textarea><button class="btn small" data-save-score-note="${cl.id}" ${locked ? "disabled" : ""}>Lưu</button></div></td><td>${filled === ctx.criteria.length ? '<span class="badge green">Đủ</span>' : `<span class="badge yellow">${filled}/${ctx.criteria.length}</span>`}</td></tr>`;
             })
             .join(
               "",
@@ -8016,25 +8023,45 @@
                   ctx.set?.formula === "base"
                     ? Number(ctx.set.base_score || 0)
                     : 0,
-                filled = 0;
+                filled = 0,
+                scoreDeduction = 0;
               ctx.criteria.forEach((c) => {
                 const e = map.get(cl.id + "|" + c.id);
                 if (e) {
                   filled++;
-                  if (e.entry_state === "value")
-                    total += criterionScore(e, c, ctx.set);
+                  if (e.entry_state === "value") {
+                    const delta = criterionScore(e, c, ctx.set);
+                    total += delta;
+                    if (delta < 0) scoreDeduction += Math.abs(delta);
+                  }
                 }
               });
               const incidents = incidentSummary(ctx.incidents, cl.id, state.weekId);
+              const classNote = String(ctx.sheet.class_notes?.[cl.id] || "").trim();
+              const incidentReasons = ctx.incidents
+                .filter(
+                  (row) =>
+                    countedIncident(row) &&
+                    row.class_id === cl.id &&
+                    row.week_id === state.weekId,
+                )
+                .map((row) => row.content || row.incident_type)
+                .filter(Boolean);
+              const deductionReason = [...new Set([classNote, ...incidentReasons].filter(Boolean))].join("; ");
               return {
                 id: cl.id,
                 class_name: cl.class_name,
                 campus_id: cl.campus_id,
-                total: total - incidents.deduction,
+                total,
                 filled,
                 complete: filled === ctx.criteria.length,
-                incident_count: incidents.count,
-                incident_deduction: incidents.deduction,
+                incident_count: Math.max(
+                  incidents.count,
+                  classNote ? classNote.split(/\n+/).filter(Boolean).length : 0,
+                ),
+                incident_deduction: scoreDeduction,
+                incident_proposed_deduction: incidents.deduction,
+                deduction_reason: deductionReason,
               };
             })
             .filter((x) => x.filled > 0)
@@ -8132,13 +8159,17 @@
               const aggregate = totals.get(classId);
               if (!aggregate || !classEntries.length) continue;
               let score =
-                set?.formula === "base" ? Number(set.base_score || 0) : 0;
+                  set?.formula === "base" ? Number(set.base_score || 0) : 0,
+                scoreDeduction = 0;
               for (const entry of classEntries) {
                 const criterion = setCriteria.find(
                   (row) => row.id === entry.criteria_id,
                 );
-                if (criterion && entry.entry_state === "value")
-                  score += criterionScore(entry, criterion, set);
+                if (criterion && entry.entry_state === "value") {
+                  const delta = criterionScore(entry, criterion, set);
+                  score += delta;
+                  if (delta < 0) scoreDeduction += Math.abs(delta);
+                }
               }
               const week = weeks.find((item) => item.id === sheet.week_id);
               const incidentRows = incidents.filter(
@@ -8152,9 +8183,27 @@
                 0,
               );
               aggregate.raw_total += score;
-              aggregate.raw_total -= incidentDeduction;
-              aggregate.incident_count = (aggregate.incident_count || 0) + incidentRows.length;
-              aggregate.incident_deduction = (aggregate.incident_deduction || 0) + incidentDeduction;
+              const classNote = String(sheet.class_notes?.[classId] || "").trim();
+              const weekLabel = week?.name || `Tuần ${week?.number || ""}`.trim();
+              const reasons = [
+                classNote,
+                ...incidentRows.map((row) => row.content || row.incident_type),
+              ].filter(Boolean);
+              aggregate.incident_count =
+                (aggregate.incident_count || 0) +
+                Math.max(
+                  incidentRows.length,
+                  classNote ? classNote.split(/\n+/).filter(Boolean).length : 0,
+                );
+              aggregate.incident_deduction =
+                (aggregate.incident_deduction || 0) + scoreDeduction;
+              aggregate.incident_proposed_deduction =
+                (aggregate.incident_proposed_deduction || 0) + incidentDeduction;
+              aggregate.deduction_reasons ||= [];
+              if (reasons.length)
+                aggregate.deduction_reasons.push(
+                  `${weekLabel}: ${[...new Set(reasons)].join("; ")}`,
+                );
               aggregate.period_count++;
             }
           }
@@ -8164,6 +8213,7 @@
               ...row,
               total: row.raw_total / row.period_count,
               complete: true,
+              deduction_reason: (row.deduction_reasons || []).join(" | "),
             }))
             .sort(
               (a, b) =>
@@ -8185,7 +8235,7 @@
           const area = $("#scoreArea"),
             official = ["approved", "locked"].includes(ctx.sheet?.status),
             rank = await calculateRanking(false);
-          area.innerHTML = `${!official ? '<div class="notice warn">Bảng chưa được duyệt. Xếp hạng dưới đây là tạm thời, không dùng cho báo cáo chính thức.</div>' : ""}<div class="table-wrap"><table><thead><tr><th>Hạng</th><th>Lớp</th><th>Cơ sở</th><th>Vi phạm</th><th>Trừ điểm</th><th>Tổng điểm</th><th>Mức dữ liệu</th><th>Loại</th></tr></thead><tbody>${rank.map((r) => `<tr><td><strong>${r.rank}</strong></td><td>${esc(r.class_name)}</td><td>${esc(campusName(r.campus_id))}</td><td>${r.incident_count || 0}</td><td>${r.incident_deduction ? `-${Number(r.incident_deduction).toFixed(1)}` : "0"}</td><td><strong>${r.total.toFixed(1)}</strong></td><td>${r.complete ? '<span class="badge green">Đủ</span>' : '<span class="badge yellow">Chưa đủ</span>'}</td><td>${official ? '<span class="badge green">Chính thức</span>' : '<span class="badge yellow">Tạm thời</span>'}</td></tr>`).join("") || '<tr><td colspan="8" class="empty">Chưa có dữ liệu xếp hạng.</td></tr>'}</tbody></table></div>`;
+          area.innerHTML = `${!official ? '<div class="notice warn">Bảng chưa được duyệt. Xếp hạng dưới đây là tạm thời, không dùng cho báo cáo chính thức.</div>' : ""}<div class="table-wrap"><table><thead><tr><th>Hạng</th><th>Lớp</th><th>Cơ sở</th><th>Vi phạm</th><th>Trừ điểm</th><th>Lỗi học sinh/lý do trừ</th><th>Tổng điểm</th><th>Mức dữ liệu</th><th>Loại</th></tr></thead><tbody>${rank.map((r) => `<tr><td><strong>${r.rank}</strong></td><td>${esc(r.class_name)}</td><td>${esc(campusName(r.campus_id))}</td><td>${r.incident_count || 0}</td><td>${r.incident_deduction ? `-${Number(r.incident_deduction).toFixed(1)}` : "0"}</td><td class="wrap">${esc(r.deduction_reason || "—")}</td><td><strong>${r.total.toFixed(1)}</strong></td><td>${r.complete ? '<span class="badge green">Đủ</span>' : '<span class="badge yellow">Chưa đủ</span>'}</td><td>${official ? '<span class="badge green">Chính thức</span>' : '<span class="badge yellow">Tạm thời</span>'}</td></tr>`).join("") || '<tr><td colspan="9" class="empty">Chưa có dữ liệu xếp hạng.</td></tr>'}</tbody></table></div>`;
         }
         function renderScoreAnomalies(ctx) {
           const map = entryMap(ctx.entries),
@@ -8715,11 +8765,14 @@
               ? '<div class="notice warn">Bảng tuần chưa được duyệt nên chưa có xếp hạng chính thức.</div>'
               : simpleTable(
                   rankingScope === "week"
-                    ? ["Hạng", "Lớp", "Cơ sở", "Vi phạm", "Trừ điểm", "Tổng điểm"]
+                    ? ["Hạng", "Lớp", "Cơ sở", "Vi phạm", "Trừ điểm", "Lỗi học sinh/lý do trừ", "Tổng điểm"]
                     : [
                         "Hạng",
                         "Lớp",
                         "Cơ sở",
+                        "Vi phạm",
+                        "Trừ điểm",
+                        "Lỗi học sinh/lý do trừ",
                         "Số tuần đã duyệt",
                         "Điểm trung bình",
                         "Tổng điểm",
@@ -8729,8 +8782,11 @@
                     x.class_name,
                     campusName(x.campus_id),
                     ...(rankingScope === "week"
-                      ? [x.incident_count || 0, x.incident_deduction || 0, x.total.toFixed(1)]
+                      ? [x.incident_count || 0, x.incident_deduction || 0, x.deduction_reason || "—", x.total.toFixed(1)]
                       : [
+                          x.incident_count || 0,
+                          x.incident_deduction || 0,
+                          x.deduction_reason || "—",
                           x.period_count,
                           x.total.toFixed(2),
                           x.raw_total.toFixed(1),
@@ -8962,6 +9018,7 @@
               campus: campusName(row.campus_id),
               incident_count: row.incident_count || 0,
               incident_deduction: row.incident_deduction || 0,
+              deduction_reason: row.deduction_reason || "",
               total: row.total,
               period_count: row.period_count || 1,
               raw_total: row.raw_total ?? row.total,
@@ -8972,6 +9029,7 @@
               ["campus", "Cơ sở"],
               ["incident_count", "Vi phạm"],
               ["incident_deduction", "Trừ điểm"],
+              ["deduction_reason", "Lỗi học sinh/lý do trừ"],
               ["period_count", "Số tuần đã duyệt"],
               ["total", "Điểm trung bình"],
               ["raw_total", "Tổng điểm"],
